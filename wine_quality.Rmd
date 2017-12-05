@@ -192,15 +192,3 @@ test_select = predict(select_rf,test_set)
 table(test_set$response,test_select)
 select_rf
 ```
-
-
-```{r}
-sapply(features[1:6], function(x){
-  par(mfrow=c(2,3))
-  formula = formula(paste0('wine~','',x,''), env = new.env())
-  r = roc(formula, wine_)
-  plot(r, title = x)
-  par(mfrow=c(1,1))
-})
-```
-
