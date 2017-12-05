@@ -1,0 +1,206 @@
+---
+title: "Wine_Quality"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+#improt library
+```{r}
+require(ggplot2)
+require(dplyr)
+require(corrgram)
+require(corrplot)
+require(gridExtra)
+require(randomForest)
+require(rpart.plot)
+```
+
+#import data
+```{r}
+red = read.csv("red.csv")
+white = read.csv("white.csv")
+```
+
+alcohol和quality的相關程度相當較高，但就網路上的資料來源顯示alcohol的濃度可能受其他原因影響，包括酸度、果味、甜度、丹寧、酒體
+
+#Exploratory analysis 
+```{r}
+#紅白酒等級分布
+redprop = data.frame(prop.table(table(red$quality)))
+
+red_quality = redprop %>% ggplot(aes(x=Var1,y=as.numeric(Freq)))+geom_bar(stat="identity",fill="tomato2")+geom_text(aes(label=round(as.numeric(Freq),3)))+xlab("Red Quality")+ylab("Ratio")+ggtitle("Red Quality")+theme_bw()+theme(plot.title = element_text(hjust = 0.5))
+
+whiteprop = data.frame(prop.table(table(white$quality)))
+
+white_quality = whiteprop %>% ggplot(aes(x=Var1,y=as.numeric(Freq)))+geom_bar(stat="identity",fill="steel blue")+geom_text(aes(label=round(as.numeric(Freq),3)))+xlab("White Quality")+ylab("Ratio")+ggtitle("White Quality")+theme_bw()+theme(plot.title = element_text(hjust = 0.5))
+
+grid.arrange(red_quality,white_quality,nrow=1)
+```
+
+
+#變數意義:
+fixed.acidity固定酸度
+volatile.acidity揮發性酸度
+citric.acid   檸檬酸
+residual.sugar 糖
+chlorides 氯化物
+free.sulfur.dioxide 游離二氧化硫
+total.sulfur.dioxide  總二氧化硫
+density 密度
+pH 酸鹼值
+sulphates 硫酸鹽
+alcohol 酒精濃度 
+quality   品質
+```{r}
+summary(red)
+```
+
+#變數型態
+```{r}
+sapply(red,class)
+```
+#Data Cleaning
+```{r}
+#use mean to fill NA
+red$total.sulfur.dioxide[is.na(red$total.sulfur.dioxide)]<-mean(red$total.sulfur.dioxide,na.rm=TRUE)
+#Build red and white label
+red$response = "R"
+white$response = "W"
+all = rbind(red,white)
+summary(all)
+```
+
+#corrgram & corplot
+```{r}
+png("cor.png", width = 1024, height = 768)
+corrgram(all, lower.panel=panel.shade, upper.panel=panel.conf,
+         diag.panel=panel.density)
+dev.off()
+```
+#紅白酒比例
+```{r}
+ratio_table = data.frame(prop.table(table(all$response)))
+ggplot(ratio_table,aes(Var1,as.numeric(Freq)))+geom_bar(stat="identity",fill="#00CACA")+geom_text(aes(label=round(as.numeric(Freq),3)))+ylab("Ratio")+xlab("Wine Response")+ggtitle("Red vs White")+theme_bw()+theme(plot.title = element_text(hjust=0.5,size=14))
+```
+
+```{r}
+
+allprop = data.frame(prop.table(table(all$quality)))
+
+allprop %>% ggplot(aes(x=Var1,y=as.numeric(Freq)))+geom_bar(stat="identity",fill="steel blue")+geom_text(aes(label=round(as.numeric(Freq),3)))+xlab("All Quality")+ylab("Ratio")+ggtitle("All Quality")+theme_bw()+theme(plot.title = element_text(hjust = 0.5,size=14))
+```
+
+#新增feature
+在上面的品質分類中可以觀察到，紅酒中5,6兩個等級最多，白酒中6等級最多，以6為分界製造"quality是否>6"的feature
+```{r}
+all = all %>% mutate(GoodQuality = if_else(quality>=6,1,0))
+ggplot(all,aes(as.factor(GoodQuality),fill=response))+geom_bar()+xlab("酒類品質")
+
+than6 = all %>% group_by(GoodQuality,response) %>% summarise(count = n()) 
+sumthan6 = all %>% group_by(GoodQuality) %>% summarise(sum = n())
+than6 = left_join(than6,sumthan6,by="GoodQuality")
+than6$ratio = than6$count/than6$sum
+
+ggplot(than6,aes(as.factor(GoodQuality),as.numeric(ratio),fill=response))+geom_bar(stat = "identity")+geom_text(label=round(as.numeric(than6$ratio),2),vjust=-0.5,size=8)+xlab("酒類品質")+ylab("Ratio")+ggtitle("Quality>=6 or not")+theme_bw()+theme(plot.title = element_text(hjust = 0.5,size=16),axis.text.x = element_text(size=14))+scale_x_discrete(labels=c("Quality<6", "Quality>=6"))
+chisq.test(table(all$GoodQuality,all$response))
+```
+
+#train and test split
+```{r}
+#共有6497筆資料，拿6000筆為train，497筆為test
+all$response = as.factor(all$response)
+train_red = all[sample(which(all$response=="R"),6000*0.246),]
+train_white = all[sample(which(all$response=="W"),6000*0.754),]
+train_set = rbind(train_red,train_white)
+test_set = all[-as.numeric(rownames(train_set)),]
+
+```
+
+#model building
+```{r}
+#Model without tuning
+set.seed(9487)
+original_rf = randomForest(response~ . ,train_set[,-14],importance=TRUE)
+original_rf
+plot(original_rf)
+```
+
+```{r}
+#plus feature
+set.seed(9488)
+plus_rf = randomForest(response~ . ,train_set,importance=TRUE,proximity = TRUE,ntree=200)
+plus_rf
+plot(plus_rf)
+```
+
+```{r}
+test_original = predict(original_rf,test_set)
+table(test_set$response,test_original)
+```
+
+#testing set
+```{r}
+test_plus = predict(plus_rf,test_set)
+table(test_set$response,test_plus)
+```
+
+
+#plot imp plot
+```{r}
+imp <- importance(plus_rf)
+impor <- data.frame(round(imp,2))
+# partial
+# impvar <- rownames(imp)[order(imp[, 1], decreasing=TRUE)]
+# par(mfrow=c(2, 2),family = "BL")
+# do.call("partialPlot", list(x = rf, pred.data = train_set, x.var = impvar[1]))
+# do.call("partialPlot", list(x = rf, pred.data = train_set, x.var = impvar[2]))
+# do.call("partialPlot", list(x = rf, pred.data = train_set, x.var = impvar[3]))
+# do.call("partialPlot", list(x = rf, pred.data = train_set, x.var = impvar[4]))
+# 
+# partial <- recordPlot()
+# rf_imp
+ggplot(impor,aes(x=reorder(rownames(impor),MeanDecreaseAccuracy),y=MeanDecreaseAccuracy))+
+  geom_bar(stat='identity',fill="#00BFC4") +
+  coord_flip()+
+  ylab("MeanDecreaseAccuracy")+
+  xlab(" ")+
+  theme_bw()+
+  theme( axis.text.x = element_text(size=20),
+         axis.text.y = element_text(size=20),
+         axis.title  = element_text(size=20,family="BL"))
+ggplot(impor,aes(x=reorder(rownames(impor),MeanDecreaseGini),y=MeanDecreaseGini))+
+  geom_bar(stat='identity',fill="tomato2") +
+  coord_flip()+
+  ylab("MeanDecreaseGini")+
+  xlab(" ")+
+  theme_bw()+
+  theme( axis.text.x = element_text(size=20),
+         axis.text.y = element_text(size=20),
+         axis.title  = element_text(size=20,family="BL"))
+
+```
+
+#variable selection
+```{r}
+#
+select_train = train_set[,c(2,5,7,8,13)]
+select_rf = randomForest(response ~ .,select_train)
+names(select_train)
+test_select = predict(select_rf,test_set)
+table(test_set$response,test_select)
+select_rf
+```
+
+
+```{r}
+sapply(features[1:6], function(x){
+  par(mfrow=c(2,3))
+  formula = formula(paste0('wine~','',x,''), env = new.env())
+  r = roc(formula, wine_)
+  plot(r, title = x)
+  par(mfrow=c(1,1))
+})
+```
+
