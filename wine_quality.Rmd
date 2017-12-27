@@ -25,6 +25,18 @@ white = read.csv("white.csv")
 
 alcohol和quality的相關程度相當較高，但就網路上的資料來源顯示alcohol的濃度可能受其他原因影響，包括酸度、果味、甜度、丹寧、酒體
 
+```{r}
+#廖的需求
+w_wine_data = white
+w_wine_data_10fold = list()
+random_index = sample(row(w_wine_data))
+length = c(1:length(w_wine_data$fixed.acidity))
+for (i in 1:10) {
+  w_wine_data_10fold[[i]] = w_wine_data[random_index[which(length%%10==i)],]
+}
+
+```
+
 #Exploratory analysis 
 ```{r}
 #紅白酒等級分布
@@ -103,7 +115,7 @@ sumthan6 = all %>% group_by(GoodQuality) %>% summarise(sum = n())
 than6 = left_join(than6,sumthan6,by="GoodQuality")
 than6$ratio = than6$count/than6$sum
 
-ggplot(than6,aes(as.factor(GoodQuality),as.numeric(ratio),fill=response))+geom_bar(stat = "identity")+geom_text(label=round(as.numeric(than6$ratio),2),vjust=-0.5,size=8)+xlab("酒類品質")+ylab("Ratio")+ggtitle("Quality>=6 or not")+theme_bw()+theme(plot.title = element_text(hjust = 0.5,size=16),axis.text.x = element_text(size=14))+scale_x_discrete(labels=c("Quality<6", "Quality>=6"))
+ggplot(than6,aes(x=as.factor(GoodQuality),y=as.numeric(ratio),fill=as.factor(response)))+geom_bar(position='dodge', stat='identity')+geom_text(aes(label=round(as.numeric(than6$ratio),2)), position=position_dodge(width=0.9), vjust=0.7,size=8)+xlab("酒類品質")+ylab("Ratio")+ggtitle("Quality>=6 or not")+theme_bw()+theme(plot.title = element_text(hjust = 0.5,size=16),axis.text.x = element_text(size=14))+scale_x_discrete(labels=c("Quality<6", "Quality>=6"))
 chisq.test(table(all$GoodQuality,all$response))
 ```
 
