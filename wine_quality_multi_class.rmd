@@ -1,0 +1,691 @@
+---
+title: "Wine_Quality"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+#improt library
+```{r}
+require(ggplot2)
+require(dplyr)
+require(corrgram)
+require(corrplot)
+require(gridExtra)
+require(randomForest)
+require(rpart.plot)
+require(ROCR)
+require(e1071)
+require(MLmetrics)
+require(caret)
+require(randomForest)
+require(Matrix)
+require(xgboost)
+```
+
+#import data
+```{r}
+red = read.csv("red.csv")
+white = read.csv("white.csv")
+```
+
+alcohol和quality的相關程度相當較高，但就網路上的資料來源顯示alcohol的濃度可能受其他原因影響，包括酸度、果味、甜度、丹寧、酒體
+
+```{r}
+#廖的需求
+# w_wine_data = white
+# w_wine_data_10fold = list()
+# random_index = sample(row(w_wine_data))
+# length = c(1:length(w_wine_data$fixed.acidity))
+# for (i in 1:10) {
+#   w_wine_data_10fold[[i]] = w_wine_data[random_index[which(length%%10==i)],]
+# }
+
+```
+
+#Exploratory analysis 
+```{r}
+#紅白酒等級分布
+redprop = data.frame(prop.table(table(red$quality)))
+
+red_quality = redprop %>% ggplot(aes(x=Var1,y=as.numeric(Freq)))+geom_bar(stat="identity",fill="tomato2")+geom_text(aes(label=round(as.numeric(Freq),3)))+xlab("Red Quality")+ylab("Ratio")+ggtitle("Red Quality")+theme_bw()+theme(plot.title = element_text(hjust = 0.5))
+
+whiteprop = data.frame(prop.table(table(white$quality)))
+
+white_quality = whiteprop %>% ggplot(aes(x=Var1,y=as.numeric(Freq)))+geom_bar(stat="identity",fill="steel blue")+geom_text(aes(label=round(as.numeric(Freq),3)))+xlab("White Quality")+ylab("Ratio")+ggtitle("White Quality")+theme_bw()+theme(plot.title = element_text(hjust = 0.5))
+
+grid.arrange(red_quality,white_quality,nrow=1)
+```
+
+
+#變數意義:
+fixed.acidity固定酸度
+volatile.acidity揮發性酸度
+citric.acid   檸檬酸
+residual.sugar 糖
+chlorides 氯化物
+free.sulfur.dioxide 游離二氧化硫
+total.sulfur.dioxide  總二氧化硫
+density 密度
+pH 酸鹼值
+sulphates 硫酸鹽
+alcohol 酒精濃度 
+quality   品質
+```{r}
+summary(red)
+```
+
+#變數型態
+```{r}
+sapply(red,class)
+```
+#Data Cleaning
+```{r}
+#use mean to fill NA
+red$total.sulfur.dioxide[is.na(red$total.sulfur.dioxide)]<-mean(red$total.sulfur.dioxide,na.rm=TRUE)
+#Build quality label  
+#low = 1,2,3,4
+#normal = 5,6
+#high = 7,8,9,10
+all = rbind(red,white)
+all = all %>% mutate(quality_level = if_else(quality<7,if_else(quality>4,"normal","low"),"high"))
+all$quality = NULL
+summary(all)
+```
+
+#三種品質比例
+```{r}
+ratio_table = data.frame(prop.table(table(all$quality_level)))
+
+ratio_table$Var1 = factor(ratio_table$Var1,levels = c("low","normal","high"))
+
+ggplot(ratio_table,aes(Var1,as.numeric(Freq)))+geom_bar(stat="identity",fill="#00CACA")+geom_text(aes(label=round(as.numeric(Freq),3)))+ylab("Ratio")+xlab("Wine Quality Level")+ggtitle("Level Distribution")+theme_bw()+theme(plot.title = element_text(hjust=0.5,size=14))
+```
+#train and test split
+```{r}
+#共有6497筆資料，拿6000筆為train，497筆為test
+all$quality_level = factor(all$quality_level,levels=c("low","normal","high"))
+
+train_low = all[sample(which(all$quality_level=="low"),6000*0.038),]
+train_normal = all[sample(which(all$quality_level=="normal"),6000*0.766),]
+train_high = all[sample(which(all$quality_level=="high"),6000*0.196),]
+
+train_set = rbind(train_low,train_normal,train_high)
+test_set = all[-as.numeric(rownames(train_set)),]
+
+```
+
+#folds function
+```{r}
+create_parition<-function(train){
+  set.seed(128)
+  #Create 5 stratified folds
+  folds<<-createFolds(y=train_set$quality_level, k = 5, list = TRUE, returnTrain = FALSE)
+}
+create_parition(train_set)
+
+
+initial_metrics<-function(){
+  acc_list<<-NULL
+  rec_list<<-NULL
+  pre_list<<-NULL
+  
+}
+
+calculate_metrics<-function(ans,pred){
+    accuracy<-Accuracy(y_true = ans, y_pred = pred)
+    recall<-Recall(y_true = ans, y_pred = pred, positive = "high")
+    precision<-Precision(y_true = ans, y_pred = pred, positive = "high")
+   
+    acc_list<<-append(acc_list,accuracy)
+    rec_list<<-append(rec_list,recall)
+    pre_list<<-append(pre_list,precision)
+}
+
+cv_score<-function(acc_list,rec_list,pre_list){
+  cv_acc<-paste0(round(mean(acc_list),3),"±",round(sd(acc_list),2))
+  cv_rec<-paste0(round(mean(rec_list),3),"±",round(sd(rec_list),2))
+  cv_pre<-paste0(round(mean(pre_list),3),"±",round(sd(pre_list),2))
+  
+  return(list(acc=cv_acc,recall=cv_rec, precision=cv_pre))
+}
+#To avoid unfortunate split
+rf_train<-function(train){
+  initial_metrics()
+  set.seed(128)
+  for(i in 1:5){
+    train_cv<-train[-folds[[i]], ]
+    test_cv<-train[folds[[i]], ]
+    rf<-randomForest(quality_level~. ,data = train_cv, ntree=500)
+    ans<-test_cv$quality_level
+    pred<-predict(rf,test_cv)
+    calculate_metrics(ans,pred)
+  }
+  cv_score(acc_list,rec_list,pre_list)
+}
+console<-rf_train(train_set)
+head(console)
+```
+
+#RF model building
+```{r}
+#Model without tuning
+set.seed(9487)
+original_rf = randomForest(quality_level~ . ,train_set,importance=TRUE)
+original_rf
+#test
+pred_original = predict(original_rf,test_set)
+table(answer=test_set$quality_level,pred_original)
+#caculate imp
+imp <- importance(original_rf)
+impor <- data.frame(round(imp,2))
+# rf_imp
+ggplot(impor,aes(x=reorder(rownames(impor),MeanDecreaseAccuracy),y=MeanDecreaseAccuracy))+
+  geom_bar(stat='identity',fill="#00BFC4") +
+  coord_flip()+
+  ylab("MeanDecreaseAccuracy")+
+  xlab(" ")+
+  theme_bw()+
+  theme( axis.text.x = element_text(size=20),
+         axis.text.y = element_text(size=20),
+         axis.title  = element_text(size=20,family="BL"))
+#console
+Accuracy(test_set$quality_level, test_original)
+Recall(test_set$quality_level,test_original, positive = "high")
+Precision(test_set$quality_level,test_original, positive = "high")
+```
+
+#svm
+```{r}
+#use folds function
+original_svm <- svm(quality_level ~ ., data = train_set,type='C-classification',kernel='radial')
+pred_svm <- predict(original_svm,test_set)
+table(answer=test_set$quality_level,pred_svm)
+#console
+Accuracy(test_set$quality_level, pred_svm)
+Recall(test_set$quality_level,pred_svm, positive = "high")
+Precision(test_set$quality_level,pred_svm, positive = "high")
+#svm 5 folds
+svm_train<-function(train){
+  initial_metrics()
+  set.seed(128)
+  for(i in 1:5){
+    train_cv<-train[-folds[[i]], ]
+    test_cv<-train[folds[[i]], ]
+    original_svm <- svm(quality_level ~ ., data = train_cv,kernel='radial')
+    pred_svm <- predict(original_svm,test_cv)
+    calculate_metrics(test_cv$quality_level,pred_svm)
+  }
+  cv_score(acc_list,rec_list,pre_list)
+}
+console_svm<-svm_train(train_set)
+head(console_svm)
+```
+
+#xgboost
+```{r}
+m = nlevels(train_set$quality_level)
+#xgb 5 folds cv
+xgb_train<-function(train){
+  initial_metrics()
+  set.seed(128)
+  for(i in 1:5){
+    train_cv<-train[-folds[[i]], ]
+    test_cv<-train[folds[[i]], ]
+  
+    train_ans<-as.numeric(train_cv$quality_level)-1
+    train_copy<-train_cv
+    train_copy$quality_level<- NULL
+    trainMatrix <- as.matrix(sparse.model.matrix(~.-1, data = train_copy))
+
+    test_ans<-as.numeric(test_cv$quality_level)-1
+    test_copy<-test_cv
+    test_copy$quality_level <- NULL
+    testMatrix <- as.matrix(sparse.model.matrix(~.-1, data = test_copy))
+    
+    # xgboost 參數設定 (xgboost parameters setup)
+    param = list("objective" = "multi:softprob",
+                 "eval_metric" = "mlogloss",
+                 "num_class" = m
+    )
+    #run model
+    original_xgb <- xgboost(data = trainMatrix, params = param, label = train_ans, nrounds = 25)
+    
+    pred_xgb <- predict(original_xgb,testMatrix)
+    pred_xgb = t(matrix(pred_xgb,m,length(pred_xgb)/m))
+    # colnames(Ypred) = levels(iris2$Species)
+    pred_xgb = levels(train_set$quality_level)[max.col(pred_xgb)]
+    
+    calculate_metrics(test_cv$quality_level,pred_xgb)
+  }
+  cv_score(acc_list,rec_list,pre_list)
+}
+console_xgb<-xgb_train(train_set)
+head(console_xgb)
+
+#run test model
+
+train_ans<-as.numeric(train_set$quality_level)-1
+train_copy<-train_set
+train_copy$quality_level <- NULL
+trainMatrix <- as.matrix(sparse.model.matrix(~.-1, data = train_copy))
+
+test_ans<-as.numeric(test_set$quality_level)-1
+test_copy<-test_set
+test_copy$quality_level <- NULL
+testMatrix <- as.matrix(sparse.model.matrix(~.-1, data = test_copy))
+
+# build the model
+param = list("objective" = "multi:softprob",
+             "eval_metric" = "mlogloss",
+             "num_class" = m
+)
+#run model
+original_xgb <- xgboost(data = trainMatrix, params = param, label = train_ans, nrounds = 25)
+    
+pred <- predict(original_xgb, testMatrix)
+pred = t(matrix(pred,m,length(pred)/m))
+pred_xgb = levels(train_set$quality_level)[max.col(pred)]
+pred_xgb = factor(pred_xgb,levels = c("low","normal","high"))
+table(answer = test_set$quality_level,pred_xgb)
+
+#console
+Accuracy(test_set$quality_level, pred_xgb)
+Recall(test_set$quality_level,pred_xgb, positive = "low")
+Precision(test_set$quality_level,pred_svm, positive = "high")
+
+```
+
+#Ensemble : 2 model Stacking
+```{r}
+#2 fold stacking
+stack_train<-function(tree_train){
+  m = nlevels(train_set$quality_level)
+  initial_metrics()
+  set.seed(128)
+  for(i in 1:5){
+    # Folds for linear,core and tree train
+    tree_train_cv<-tree_train[-folds[[i]], ]
+    row.names(tree_train_cv) = c(1:length(tree_train_cv[[1]]))
+    tree_test_cv<-tree_train[folds[[i]], ]
+    row.names(tree_test_cv) = c(1:length(tree_test_cv[[1]]))
+    #each set split into two as A and B
+    set.seed(128)
+    train_partition<-createDataPartition(tree_train_cv$quality_level, p = .5, list = FALSE)
+    tree_trainA<-tree_train_cv[train_partition, ]
+    tree_trainB<-tree_train_cv[-train_partition, ]
+    
+    # Answer for train and test (should be same for all)
+    # 調整而已
+     train_ansA<-as.numeric(tree_trainA$quality_level)-1
+     train_ansB<-as.numeric(tree_trainB$quality_level)-1
+     train_ans<-as.numeric(tree_train_cv$quality_level)-1
+     test_ans<-tree_test_cv$quality_level
+    
+    # #SVM 
+    # svmA<-svm(quality_level~. ,data = tree_trainA)
+    # pred_svmB<-predict(svmA,tree_trainB)
+    # svmB<-svm(quality_level~. ,data = tree_trainB) 
+    # pred_svmA<-predict(svmB,tree_trainA)
+    # 
+    # pred_svm<-rep(NA,nrow(tree_train_cv))
+    # pred_svm[train_partition]<-pred_svmA
+    # pred_svm[-train_partition]<-pred_svmB
+    # stacker<-data.frame(svm=pred_svm)
+    
+    # Random Forest
+    rfA<-randomForest(quality_level~. ,data = tree_trainA, ntree=500)
+    pred_rfB<-predict(rfA,tree_trainB)
+    rfB<-randomForest(quality_level~. ,data = tree_trainB, ntree=500) 
+    pred_rfA<-predict(rfB,tree_trainA)
+    
+    pred_rf<-rep(NA,nrow(tree_train_cv))
+    pred_rf[train_partition]<-pred_rfA
+    pred_rf[-train_partition]<-pred_rfB
+    stacker<-data.frame(rf=pred_rf)
+    
+    # XGB
+    tree_train_copyA<-tree_trainA
+    tree_train_copyA$quality_level <- NULL
+    trainMatrixA <- as.matrix(sparse.model.matrix(~.-1, data = tree_train_copyA))
+    
+    tree_train_copyB<-tree_trainB
+    tree_train_copyB$quality_level <- NULL
+    trainMatrixB <- as.matrix(sparse.model.matrix(~.-1, data = tree_train_copyB))
+    
+    param = list("objective" = "multi:softprob",
+                 "eval_metric" = "mlogloss",
+                 "num_class" = m
+    )
+    xgbA <- xgboost(data = trainMatrixA, params = param, label = train_ansA, nrounds = 25)
+    pred_xgbB <- predict(xgbA, trainMatrixB)
+    pred_xgbB = t(matrix(pred_xgbB,m,length(pred_xgbB)/m))
+    pred_xgbB = levels(train_set$quality_level)[max.col(pred_xgbB)]
+    
+    xgbB <- xgboost(data = trainMatrixB, params = param, label = train_ansB, nrounds = 25)
+    pred_xgbA <- predict(xgbB, trainMatrixA)
+    pred_xgbA = t(matrix(pred_xgbA,m,length(pred_xgbA)/m))
+    pred_xgbA = levels(train_set$quality_level)[max.col(pred_xgbA)]
+    
+    pred_xgb<-rep(NA,nrow(tree_train_cv))
+    pred_xgb[train_partition]<-pred_xgbA
+    pred_xgb[-train_partition]<-pred_xgbB
+    stacker<-cbind(stacker,xgb=pred_xgb)
+    
+    #stacker$xgb = as.numeric(factor(stacker$xgb,levels=c("low","normal","high")))-1
+
+    
+    #train second model
+    stacker$ans<-train_ans
+    stacker = stacker %>% mutate(answer = ifelse(ans!=0,ifelse(ans==1,"normal","high"),"low"),rf = ifelse(rf!=1,ifelse(rf==2,"normal","high"),"low"))
+    stacker$ans = NULL
+    #stacker$svm = factor(stacker$rf,levels = c("low","normal","high"))
+    stacker$rf = factor(stacker$rf,levels = c("low","normal","high"))
+    stacker$xgb = factor(stacker$xgb,levels = c("low","normal","high"))
+    stacker$answer = factor(stacker$answer,levels = c("low","normal","high"))
+    
+    
+    stacked_model <- randomForest(answer ~.,data = stacker,ntree=500)
+    
+    #train on full model to generate features for test 
+    tree_train_copy<-tree_train_cv
+    tree_train_copy$quality_level <- NULL
+    trainMatrix <- as.matrix(sparse.model.matrix(~.-1, data = tree_train_copy))
+    
+    tree_test_copy<-tree_test_cv
+    tree_test_copy$quality_level <- NULL
+    testMatrix <- as.matrix(sparse.model.matrix(~.-1, data = tree_test_copy))
+    
+    param = list("objective" = "multi:softprob",
+                 "eval_metric" = "mlogloss",
+                 "num_class" = m
+    )
+    
+    xgb <- xgboost(data = trainMatrix, params = param, label = train_ans, nrounds = 25)
+    
+    pred_xgb <- predict(xgb, testMatrix)
+    pred_xgb = t(matrix(pred_xgb,m,length(pred_xgb)/m))
+    pred_xgb = levels(train_set$quality_level)[max.col(pred_xgb)]
+   
+    rf<-randomForest(quality_level~. ,data = tree_train_cv, ntree=500) 
+    pred_rf<-predict(rf,tree_test_cv)
+    
+    # svm <-svm(quality_level~. ,data = tree_train_cv)
+    # pred_svm<-predict(svm,tree_test_cv)
+    #製作完stacker test
+    stacker_test<-cbind.data.frame(pred_xgb,pred_rf)
+    colnames(stacker_test)<-c("xgb","rf")
+    
+    stacker_test$xgb = factor(stacker_test$xgb,levels=c("low","normal","high"))
+    # stacker_test$rf = as.numeric(factor(stacker_test$rf,levels=c("low","normal","high")))-1
+    
+    #用剛剛製作完成的stacked model 去 predict
+    pred <- predict(stacked_model, newdata=stacker_test)
+    calculate_metrics(test_ans,pred)
+  }
+  cv_score(acc_list,rec_list,pre_list)
+}
+#看結果
+stack<-stack_train(train_set)
+stack
+```
+
+
+#Ensemble : 3 model Stacking
+```{r}
+#2 fold stacking
+stack_train_all<-function(tree_train){
+  m = nlevels(train_set$quality_level)
+  initial_metrics()
+  set.seed(128)
+  for(i in 1:5){
+    # Folds for linear,core and tree train
+    tree_train_cv<-tree_train[-folds[[i]], ]
+    row.names(tree_train_cv) = c(1:length(tree_train_cv[[1]]))
+    tree_test_cv<-tree_train[folds[[i]], ]
+    row.names(tree_test_cv) = c(1:length(tree_test_cv[[1]]))
+    #each set split into two as A and B
+    set.seed(128)
+    train_partition<-createDataPartition(tree_train_cv$quality_level, p = .5, list = FALSE)
+    tree_trainA<-tree_train_cv[train_partition, ]
+    tree_trainB<-tree_train_cv[-train_partition, ]
+    
+    # Answer for train and test (should be same for all)
+    # 調整而已
+     train_ansA<-as.numeric(tree_trainA$quality_level)-1
+     train_ansB<-as.numeric(tree_trainB$quality_level)-1
+     train_ans<-as.numeric(tree_train_cv$quality_level)-1
+     test_ans<-tree_test_cv$quality_level
+    
+    #SVM
+    svmA<-svm(quality_level~. ,data = tree_trainA)
+    pred_svmB<-predict(svmA,tree_trainB)
+    svmB<-svm(quality_level~. ,data = tree_trainB)
+    pred_svmA<-predict(svmB,tree_trainA)
+
+    pred_svm<-rep(NA,nrow(tree_train_cv))
+    pred_svm[train_partition]<-pred_svmA
+    pred_svm[-train_partition]<-pred_svmB
+    stacker<-data.frame(svm=pred_svm)
+    
+    # Random Forest
+    rfA<-randomForest(quality_level~. ,data = tree_trainA, ntree=500)
+    pred_rfB<-predict(rfA,tree_trainB)
+    rfB<-randomForest(quality_level~. ,data = tree_trainB, ntree=500) 
+    pred_rfA<-predict(rfB,tree_trainA)
+    
+    pred_rf<-rep(NA,nrow(tree_train_cv))
+    pred_rf[train_partition]<-pred_rfA
+    pred_rf[-train_partition]<-pred_rfB
+    stacker<-cbind(stacker,rf=pred_rf)
+    
+    # XGB
+    tree_train_copyA<-tree_trainA
+    tree_train_copyA$quality_level <- NULL
+    trainMatrixA <- as.matrix(sparse.model.matrix(~.-1, data = tree_train_copyA))
+    
+    tree_train_copyB<-tree_trainB
+    tree_train_copyB$quality_level <- NULL
+    trainMatrixB <- as.matrix(sparse.model.matrix(~.-1, data = tree_train_copyB))
+    
+    param = list("objective" = "multi:softprob",
+                 "eval_metric" = "mlogloss",
+                 "num_class" = m
+    )
+    xgbA <- xgboost(data = trainMatrixA, params = param, label = train_ansA, nrounds = 25)
+    pred_xgbB <- predict(xgbA, trainMatrixB)
+    pred_xgbB = t(matrix(pred_xgbB,m,length(pred_xgbB)/m))
+    pred_xgbB = levels(train_set$quality_level)[max.col(pred_xgbB)]
+    
+    xgbB <- xgboost(data = trainMatrixB, params = param, label = train_ansB, nrounds = 25)
+    pred_xgbA <- predict(xgbB, trainMatrixA)
+    pred_xgbA = t(matrix(pred_xgbA,m,length(pred_xgbA)/m))
+    pred_xgbA = levels(train_set$quality_level)[max.col(pred_xgbA)]
+    
+    pred_xgb<-rep(NA,nrow(tree_train_cv))
+    pred_xgb[train_partition]<-pred_xgbA
+    pred_xgb[-train_partition]<-pred_xgbB
+    stacker<-cbind(stacker,xgb=pred_xgb)
+    
+    #stacker$xgb = as.numeric(factor(stacker$xgb,levels=c("low","normal","high")))-1
+
+    
+    #train second model
+    stacker$ans<-train_ans
+    stacker = stacker %>% mutate(answer = ifelse(ans!=0,ifelse(ans==1,"normal","high"),"low"),rf = ifelse(rf!=1,ifelse(rf==2,"normal","high"),"low"),svm = ifelse(rf!=1,ifelse(rf==2,"normal","high")))
+    stacker$ans = NULL
+    stacker$svm = factor(stacker$rf,levels = c("low","normal","high"))
+    stacker$rf = factor(stacker$rf,levels = c("low","normal","high"))
+    stacker$xgb = factor(stacker$xgb,levels = c("low","normal","high"))
+    stacker$answer = factor(stacker$answer,levels = c("low","normal","high"))
+    
+    
+    stacked_model <- randomForest(answer ~.,data = stacker,ntree=500)
+    
+    #train on full model to generate features for test 
+    tree_train_copy<-tree_train_cv
+    tree_train_copy$quality_level <- NULL
+    trainMatrix <- as.matrix(sparse.model.matrix(~.-1, data = tree_train_copy))
+    
+    tree_test_copy<-tree_test_cv
+    tree_test_copy$quality_level <- NULL
+    testMatrix <- as.matrix(sparse.model.matrix(~.-1, data = tree_test_copy))
+    
+    param = list("objective" = "multi:softprob",
+                 "eval_metric" = "mlogloss",
+                 "num_class" = m
+    )
+    
+    xgb <- xgboost(data = trainMatrix, params = param, label = train_ans, nrounds = 25)
+    
+    pred_xgb <- predict(xgb, testMatrix)
+    pred_xgb = t(matrix(pred_xgb,m,length(pred_xgb)/m))
+    pred_xgb = levels(train_set$quality_level)[max.col(pred_xgb)]
+   
+    rf<-randomForest(quality_level~. ,data = tree_train_cv, ntree=500) 
+    pred_rf<-predict(rf,tree_test_cv)
+    
+    svm <-svm(quality_level~. ,data = tree_train_cv)
+    pred_svm<-predict(svm,tree_test_cv)
+    #製作完stacker test
+    stacker_test<-cbind.data.frame(pred_xgb,pred_rf,pred_svm)
+    colnames(stacker_test)<-c("xgb","rf","svm")
+    
+    stacker_test$xgb = factor(stacker_test$xgb,levels=c("low","normal","high"))
+    # stacker_test$rf = as.numeric(factor(stacker_test$rf,levels=c("low","normal","high")))-1
+    
+    #用剛剛製作完成的stacked model 去 predict
+    pred <- predict(stacked_model, newdata=stacker_test)
+    calculate_metrics(test_ans,pred)
+  }
+  cv_score(acc_list,rec_list,pre_list)
+}
+#看結果
+stack_all<-stack_train_all(train_set)
+stack_all
+```
+
+
+#predict test(holdout)
+```{r}
+#選擇stacking model 並 對所有資料重新做一次
+stack_prediction<-function(tree_train,tree_holdout){
+  set.seed(128)
+  #split the train set into two
+  train_partition<-createDataPartition(tree_train$quality_level, p = .5, list = FALSE)
+  tree_trainA<-tree_train[train_partition, ]
+  tree_trainB<-tree_train[-train_partition, ]
+  
+  # Answer for train and test (should be same for all)
+  train_ansA<-as.numeric(tree_trainA$quality_level)-1
+  train_ansB<-as.numeric(tree_trainB$quality_level)-1
+  train_ans<-as.numeric(tree_train$quality_level)-1
+  holdout_ans<-tree_holdout$quality_level
+  
+  # Random Forest
+  rfA<-randomForest(quality_level~. ,data = tree_trainA, ntree=500)
+  pred_rfB<-predict(rfA,tree_trainB)
+  rfB<-randomForest(quality_level~. ,data = tree_trainB, ntree=500)
+  pred_rfA<-predict(rfB,tree_trainA)
+  
+  pred_rf<-rep(NA,nrow(tree_train))
+  pred_rf[train_partition]<-pred_rfA
+  pred_rf[-train_partition]<-pred_rfB
+  stacker<-data.frame(rf=pred_rf)
+    
+  # XGB
+  tree_train_copyA<-tree_trainA
+  tree_train_copyA$quality_level <- NULL
+  trainMatrixA <- as.matrix(sparse.model.matrix(~.-1, data = tree_train_copyA))
+    
+  tree_train_copyB<-tree_trainB
+  tree_train_copyB$quality_level <- NULL
+  trainMatrixB <- as.matrix(sparse.model.matrix(~.-1, data = tree_train_copyB))
+    
+  param = list("objective" = "multi:softprob",
+                 "eval_metric" = "mlogloss",
+               "num_class" = m
+  )
+  xgbA <- xgboost(data = trainMatrixA, params = param, label = train_ansA, nrounds = 25)
+  pred_xgbB <- predict(xgbA, trainMatrixB)
+  pred_xgbB = t(matrix(pred_xgbB,m,length(pred_xgbB)/m))
+  pred_xgbB = levels(train_set$quality_level)[max.col(pred_xgbB)]
+  
+  xgbB <- xgboost(data = trainMatrixB, params = param, label = train_ansB, nrounds = 25)
+  pred_xgbA <- predict(xgbB, trainMatrixA)
+  pred_xgbA = t(matrix(pred_xgbA,m,length(pred_xgbA)/m))
+  pred_xgbA = levels(train_set$quality_level)[max.col(pred_xgbA)]
+    
+  pred_xgb<-rep(NA,nrow(tree_train))
+  pred_xgb[train_partition]<-pred_xgbA
+  pred_xgb[-train_partition]<-pred_xgbB
+  stacker<-cbind(stacker,xgb=pred_xgb)
+  
+  #clean stacker train data
+  stacker$ans<-train_ans
+  stacker = stacker %>% mutate(answer = ifelse(ans!=0,ifelse(ans==1,"normal","high"),"low"),rf = ifelse(rf!=1,ifelse(rf==2,"normal","high"),"low"))
+  stacker$ans = NULL
+  stacker$rf = factor(stacker$rf,levels = c("low","normal","high"))
+  stacker$xgb = factor(stacker$xgb,levels = c("low","normal","high"))
+  stacker$answer = factor(stacker$answer,levels = c("low","normal","high"))
+  
+  #train second model
+  stacked_model <- randomForest(answer ~.,data = stacker,ntree=500)
+    
+  #train on full model to generate features for test 
+  #xgb
+  tree_train_copy<-tree_train
+  tree_train_copy$quality_level <- NULL
+  trainMatrix <- as.matrix(sparse.model.matrix(~.-1, data = tree_train_copy))
+  
+  tree_holdout_copy<-tree_holdout
+  tree_holdout_copy$quality_level <- NULL
+  holdoutMatrix <- as.matrix(sparse.model.matrix(~.-1, data = tree_holdout_copy))
+  
+  param = list("objective" = "multi:softprob",
+                 "eval_metric" = "mlogloss",
+               "num_class" = 3
+  )
+  xgb <- xgboost(data = trainMatrix, params = param, label = train_ans, nrounds = 25)
+  pred_xgb <- predict(xgb, holdoutMatrix)
+  pred_xgb = t(matrix(pred_xgb,m,length(pred_xgb)/m))
+  pred_xgb = levels(train_set$quality_level)[max.col(pred_xgb)]
+  #random forest
+  rf<-randomForest(quality_level~. ,data = tree_train, ntree=500) 
+  pred_rf<-predict(rf,tree_holdout)
+    
+  stacker_holdout<-cbind.data.frame(pred_xgb,pred_rf)
+  colnames(stacker_holdout)<-c("xgb","rf")
+  stacker_holdout$xgb = factor(stacker_holdout$xgb,levels=c("low","normal","high"))
+  
+  pred <- predict(stacked_model, newdata=stacker_holdout)
+  return(pred)
+}
+#check data
+tree_train = train_set
+tree_holdout = test_set
+#run function 
+holdout_pred<-stack_prediction(tree_train,tree_holdout)
+
+holdout_ans<-tree_holdout$quality_level
+
+#看結果
+A=Accuracy(y_true = holdout_ans, y_pred = holdout_pred)
+#M=ConfusionMatrix(y_true = holdout_ans, y_pred = holdout_pred)
+P=Precision(y_true = holdout_ans, y_pred = holdout_pred,positive = "high")
+R=Recall(y_true = holdout_ans, y_pred = holdout_pred,positive = "low")
+final_console = list(Accuracy=A,Precision=P,Recall=R)
+final_console
+```
+
+
+#variable selection
+```{r}
+select_train = train_set[,c(2,5,7,8,13)]
+select_rf = randomForest(response ~ .,select_train)
+names(select_train)
+test_select = predict(select_rf,test_set)
+table(test_set$response,test_select)
+select_rf
+```
