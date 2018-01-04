@@ -679,13 +679,3 @@ final_console = list(Accuracy=A,Precision=P,Recall=R)
 final_console
 ```
 
-
-#variable selection
-```{r}
-select_train = train_set[,c(2,5,7,8,13)]
-select_rf = randomForest(response ~ .,select_train)
-names(select_train)
-test_select = predict(select_rf,test_set)
-table(test_set$response,test_select)
-select_rf
-```
