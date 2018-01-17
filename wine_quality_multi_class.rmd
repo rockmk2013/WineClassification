@@ -49,11 +49,11 @@ alcohol和quality的相關程度相當較高，但就網路上的資料來源顯
 #紅白酒等級分布
 redprop = data.frame(prop.table(table(red$quality)))
 
-red_quality = redprop %>% ggplot(aes(x=Var1,y=as.numeric(Freq)))+geom_bar(stat="identity",fill="tomato2")+geom_text(aes(label=round(as.numeric(Freq),3)))+xlab("Red Quality")+ylab("Ratio")+ggtitle("Red Quality")+theme_bw()+theme(plot.title = element_text(hjust = 0.5))
+red_quality = redprop %>% ggplot(aes(x=Var1,y=as.numeric(Freq)))+geom_bar(stat="identity",fill="tomato2")+geom_text(aes(label=round(as.numeric(Freq),3)),size=5)+xlab("Red Quality")+ylab("Ratio")+ggtitle("Red Quality")+theme_bw()+theme(plot.title = element_text(hjust = 0.5))
 
 whiteprop = data.frame(prop.table(table(white$quality)))
 
-white_quality = whiteprop %>% ggplot(aes(x=Var1,y=as.numeric(Freq)))+geom_bar(stat="identity",fill="steel blue")+geom_text(aes(label=round(as.numeric(Freq),3)))+xlab("White Quality")+ylab("Ratio")+ggtitle("White Quality")+theme_bw()+theme(plot.title = element_text(hjust = 0.5))
+white_quality = whiteprop %>% ggplot(aes(x=Var1,y=as.numeric(Freq)))+geom_bar(stat="identity",fill="steel blue")+geom_text(aes(label=round(as.numeric(Freq),3)),size=5)+xlab("White Quality")+ylab("Ratio")+ggtitle("White Quality")+theme_bw()+theme(plot.title = element_text(hjust = 0.5))
 
 grid.arrange(red_quality,white_quality,nrow=1)
 ```
@@ -100,7 +100,7 @@ ratio_table = data.frame(prop.table(table(all$quality_level)))
 
 ratio_table$Var1 = factor(ratio_table$Var1,levels = c("low","normal","high"))
 
-ggplot(ratio_table,aes(Var1,as.numeric(Freq)))+geom_bar(stat="identity",fill="#00CACA")+geom_text(aes(label=round(as.numeric(Freq),3)))+ylab("Ratio")+xlab("Wine Quality Level")+ggtitle("Level Distribution")+theme_bw()+theme(plot.title = element_text(hjust=0.5,size=14))
+ggplot(ratio_table,aes(Var1,as.numeric(Freq)))+geom_bar(stat="identity",fill="#00CACA")+geom_text(aes(label=round(as.numeric(Freq),3)),size=10)+ylab("Ratio")+xlab("Wine Quality Level")+ggtitle("Level Distribution")+theme_bw()+theme(plot.title = element_text(hjust=0.5,size=14))
 ```
 #train and test split
 ```{r}
@@ -191,9 +191,9 @@ ggplot(impor,aes(x=reorder(rownames(impor),MeanDecreaseAccuracy),y=MeanDecreaseA
          axis.text.y = element_text(size=20),
          axis.title  = element_text(size=20,family="BL"))
 #console
-Accuracy(test_set$quality_level, test_original)
-Recall(test_set$quality_level,test_original, positive = "high")
-Precision(test_set$quality_level,test_original, positive = "high")
+Accuracy(test_set$quality_level, pred_original)
+Recall(test_set$quality_level,pred_original, positive = "high")
+Precision(test_set$quality_level,pred_original, positive = "high")
 ```
 
 #svm
@@ -250,7 +250,7 @@ xgb_train<-function(train){
                  "num_class" = m
     )
     #run model
-    original_xgb <- xgboost(data = trainMatrix, params = param, label = train_ans, nrounds = 25)
+    original_xgb <- xgboost(data = trainMatrix, params = param, label = train_ans, nrounds = 100)
     
     pred_xgb <- predict(original_xgb,testMatrix)
     pred_xgb = t(matrix(pred_xgb,m,length(pred_xgb)/m))
@@ -537,7 +537,7 @@ stack_train_all<-function(tree_train){
                  "num_class" = m
     )
     
-    xgb <- xgboost(data = trainMatrix, params = param, label = train_ans, nrounds = 25)
+    xgb <- xgboost(data = trainMatrix, params = param, label = train_ans, nrounds = 100)
     
     pred_xgb <- predict(xgb, testMatrix)
     pred_xgb = t(matrix(pred_xgb,m,length(pred_xgb)/m))
@@ -604,7 +604,7 @@ stack_prediction<-function(tree_train,tree_holdout){
   trainMatrixB <- as.matrix(sparse.model.matrix(~.-1, data = tree_train_copyB))
     
   param = list("objective" = "multi:softprob",
-                 "eval_metric" = "mlogloss",
+               "eval_metric" = "mlogloss",
                "num_class" = m
   )
   xgbA <- xgboost(data = trainMatrixA, params = param, label = train_ansA, nrounds = 25)
@@ -644,7 +644,7 @@ stack_prediction<-function(tree_train,tree_holdout){
   holdoutMatrix <- as.matrix(sparse.model.matrix(~.-1, data = tree_holdout_copy))
   
   param = list("objective" = "multi:softprob",
-                 "eval_metric" = "mlogloss",
+               "eval_metric" = "mlogloss",
                "num_class" = 3
   )
   xgb <- xgboost(data = trainMatrix, params = param, label = train_ans, nrounds = 25)
